@@ -1,6 +1,15 @@
-import streamlit as st
+import os
+import tempfile
 import sqlite3
 from datetime import datetime, timedelta
+
+import streamlit as st
+
+# Optional auto-refresh (for live updates across users)
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:
+    st_autorefresh = None
 
 # -------------------------
 # PAGE CONFIG
@@ -20,6 +29,9 @@ except Exception:
 
 # Admin PIN (change to your own secret code)
 ADMIN_PIN = "hradmin"
+
+# SQLite DB path in a guaranteed writable temp directory
+DB_PATH = os.path.join(tempfile.gettempdir(), "engagement_scrabble.db")
 
 # 13 SCRABBLE WORDS + CLUES
 WORDS = [
@@ -109,69 +121,12 @@ ACTIVE_WINDOW_MINUTES = 10  # for live participants counter
 
 
 # -------------------------
-# HELPER: FORMAT TIME
-# -------------------------
-def format_mmss(seconds: int) -> str:
-    if seconds < 0:
-        seconds = 0
-    m = seconds // 60
-    s = seconds % 60
-    return f"{m:02d}:{s:02d}"
-
-
-def render_js_timer(suffix: str, start_time: datetime, time_limit_sec: int = TIME_LIMIT):
-    """
-    Render a front-end-only timer that updates every second in the browser.
-    suffix: unique suffix so IDs don't collide.
-    """
-    if not start_time:
-        return
-    start_ms = int(start_time.timestamp() * 1000)
-    total_ms = int(time_limit_sec * 1000)
-
-    timer_html = f"""
-    <div id="timer-container-{suffix}" style="margin-top: 0.5rem;">
-      <div><strong>Clock:</strong> <span id="clock-{suffix}">--:--</span></div>
-      <div><strong>Countdown:</strong> <span id="countdown-{suffix}">--:--</span></div>
-    </div>
-    <script>
-    (function() {{
-      const start = {start_ms};
-      const total = {total_ms};
-      function pad(n) {{
-        return n.toString().padStart(2, '0');
-      }}
-      function updateTimer() {{
-        const now = Date.now();
-        const elapsedSec = Math.floor((now - start) / 1000);
-        const remainingSec = Math.max(0, Math.floor(total / 1000 - elapsedSec));
-
-        const clockEl = document.getElementById("clock-{suffix}");
-        const countdownEl = document.getElementById("countdown-{suffix}");
-        if (!clockEl || !countdownEl) return;
-
-        const eMin = Math.floor(elapsedSec / 60);
-        const eSec = elapsedSec % 60;
-        const rMin = Math.floor(remainingSec / 60);
-        const rSec = remainingSec % 60;
-
-        clockEl.textContent = pad(eMin) + ":" + pad(eSec);
-        countdownEl.textContent = pad(rMin) + ":" + pad(rSec);
-      }}
-      updateTimer();
-      setInterval(updateTimer, 1000);
-    }})();
-    </script>
-    """
-    st.markdown(timer_html, unsafe_allow_html=True)
-
-
-# -------------------------
 # DB HELPERS
 # -------------------------
 @st.cache_resource
 def get_connection():
-    conn = sqlite3.connect("scrabble_game.db", check_same_thread=False)
+    # Use a writable temp path
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA foreign_keys = 1")
     return conn
 
@@ -446,7 +401,7 @@ def render_admin_controls():
                 if pin == ADMIN_PIN:
                     st.session_state.is_admin = True
                     st.success("Admin controls unlocked.")
-                    st.experimental_rerun()
+                    st.rerun()
                 else:
                     st.error("Incorrect PIN.")
         else:
@@ -481,10 +436,6 @@ def render_admin_controls():
             with tcol2:
                 st.metric("⏱ Remaining (s)", time_left)
 
-            # JS clock (admin sidebar)
-            if start_time and is_active:
-                render_js_timer("admin_sidebar", start_time)
-
             # Only show correct answer AFTER time is over
             if idx < TOTAL_WORDS and start_time is not None and time_left <= 0:
                 st.markdown(f"✅ Correct word: **{WORDS[idx]['answer']}**")
@@ -517,12 +468,12 @@ def render_admin_controls():
                         set_game_state(
                             question_start_time=datetime.utcnow(), is_active=1
                         )
-                        st.experimental_rerun()
+                        st.rerun()
                 else:
                     st.info("Round is currently in progress.")
                     if st.button("⏹ Stop round (lock answers)", key="admin_stop_round"):
                         set_game_state(is_active=0)
-                        st.experimental_rerun()
+                        st.rerun()
 
                 if st.button("⏭ Next word", key="admin_next_word"):
                     new_idx = min(idx + 1, TOTAL_WORDS)
@@ -531,7 +482,7 @@ def render_admin_controls():
                         question_start_time=None,
                         is_active=0,
                     )
-                    st.experimental_rerun()
+                    st.rerun()
 
             # Colourful leaderboard preview in admin panel
             st.markdown("---")
@@ -627,7 +578,7 @@ def render_admin_controls():
                     is_active=0,
                 )
                 st.success("Game has been reset.")
-                st.experimental_rerun()
+                st.rerun()
 
 
 # -------------------------
@@ -756,9 +707,6 @@ def show_admin_main_view():
     with tcol2:
         st.metric("⏱ Remaining (s)", time_left)
 
-    # JS clock for admin main view
-    render_js_timer("admin_main", start_time)
-
     if time_left <= 0:
         st.markdown("### ✅ Correct word")
         st.markdown(
@@ -778,6 +726,10 @@ def show_admin_main_view():
 def main():
     init_db()
     init_session_state()
+
+    # Optional auto-refresh each second for live updates if library is installed
+    if st_autorefresh is not None:
+        st_autorefresh(interval=1000, key="game_autorefresh")
 
     st.title("🧩 Employee Engagement Scrabble – Live Game")
 
@@ -804,7 +756,7 @@ def main():
                 st.session_state.player_name = name
                 st.session_state.player_id = player_id
                 st.success(f"Welcome, {name}! You have joined the live game.")
-                st.experimental_rerun()
+                st.rerun()
             except Exception as e:
                 st.error(f"Error creating player: {e}")
                 st.stop()
@@ -885,9 +837,6 @@ def main():
     with timer_col2:
         st.metric("⏱ Remaining (s)", time_left)
 
-    # JS live clock for player
-    render_js_timer("player", start_time)
-
     disabled_input = st.session_state.has_answered or time_left <= 0
 
     answer = st.text_input(
@@ -921,7 +870,7 @@ def main():
         if is_correct:
             st.balloons()
 
-        st.experimental_rerun()
+        st.rerun()
 
     if st.session_state.has_answered or time_left <= 0:
         show_answer_feedback(word_data)
