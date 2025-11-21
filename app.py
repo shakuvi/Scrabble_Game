@@ -4,7 +4,6 @@ import sqlite3
 from datetime import datetime, timedelta
 
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh  # pip install streamlit-autorefresh
 
 # -------------------------
 # PAGE CONFIG
@@ -116,6 +115,23 @@ WORDS = [
 TOTAL_WORDS = len(WORDS)
 TIME_LIMIT = 30  # seconds per word
 ACTIVE_WINDOW_MINUTES = 10  # for live participants counter
+
+
+# -------------------------
+# SIMPLE AUTO-REFRESH (JS)
+# -------------------------
+def add_auto_refresh(interval_ms: int = 1500):
+    """Add a JS snippet that reloads the page every interval_ms milliseconds."""
+    st.markdown(
+        f"""
+        <script>
+        setTimeout(function() {{
+            window.location.reload();
+        }}, {interval_ms});
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # -------------------------
@@ -725,12 +741,15 @@ def main():
     init_db()
     init_session_state()
 
-    # 🔁 Auto-refresh every 1s: ensures players & admin see Next-word updates and timers
-    st_autorefresh(interval=1000, key="game_autorefresh")
-
     st.title("🧩 Employee Engagement Scrabble – Live Game")
 
     render_admin_controls()
+
+    # Auto-refresh only when:
+    # - admin view, OR
+    # - a player has already joined
+    if IS_ADMIN_VIEW or st.session_state.player_id:
+        add_auto_refresh(interval_ms=1500)
 
     if IS_ADMIN_VIEW:
         show_admin_main_view()
@@ -760,7 +779,6 @@ def main():
     player_id = st.session_state.player_id
     player_name = st.session_state.player_name
 
-    # If game was reset and this player no longer exists, force them back to Join screen
     if not player_exists(player_id):
         st.session_state.player_id = None
         st.session_state.player_name = None
