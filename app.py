@@ -4,12 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 import streamlit as st
-
-# Optional auto-refresh (for live updates across users)
-try:
-    from streamlit_autorefresh import st_autorefresh
-except ImportError:
-    st_autorefresh = None
+from streamlit_autorefresh import st_autorefresh  # pip install streamlit-autorefresh
 
 # -------------------------
 # PAGE CONFIG
@@ -21,11 +16,14 @@ st.set_page_config(
 )
 
 # Detect admin view via URL parameter (?admin=1)
+IS_ADMIN_VIEW = False
 try:
+    # Newer Streamlit versions
     IS_ADMIN_VIEW = st.query_params.get("admin", "0") == "1"
 except Exception:
-    # fallback for older Streamlit versions
-    IS_ADMIN_VIEW = False
+    # Fallback for older versions
+    params = st.experimental_get_query_params()
+    IS_ADMIN_VIEW = params.get("admin", ["0"])[0] == "1"
 
 # Admin PIN (change to your own secret code)
 ADMIN_PIN = "hradmin"
@@ -125,7 +123,6 @@ ACTIVE_WINDOW_MINUTES = 10  # for live participants counter
 # -------------------------
 @st.cache_resource
 def get_connection():
-    # Use a writable temp path
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA foreign_keys = 1")
     return conn
@@ -275,7 +272,6 @@ def count_live_players():
 
 
 def get_live_players_names():
-    """Return list of names of players recently active (logged in)."""
     conn = get_connection()
     cur = conn.cursor()
     cutoff = datetime.utcnow() - timedelta(minutes=ACTIVE_WINDOW_MINUTES)
@@ -335,7 +331,6 @@ def get_current_word_leaderboard(word_index: int):
 
 
 def get_answer_stats(word_index: int):
-    """Return total answers, correct, incorrect for this word."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -355,11 +350,29 @@ def get_answer_stats(word_index: int):
     return total, correct, incorrect
 
 
-def reset_scores():
+def reset_all():
+    """Delete all scores, all players, and reset game_state to initial."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM scores")
+    cur.execute("DELETE FROM players")
+    cur.execute(
+        """
+        UPDATE game_state
+        SET current_word_index = 0,
+            question_start_time = NULL,
+            is_active = 0
+        WHERE id = 1
+        """
+    )
     conn.commit()
+
+
+def player_exists(player_id: int) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM players WHERE id = ?", (player_id,))
+    return cur.fetchone() is not None
 
 
 # -------------------------
@@ -386,12 +399,10 @@ def init_session_state():
 # ADMIN CONTROLS & INSIGHTS (SIDEBAR)
 # -------------------------
 def render_admin_controls():
-    # If not in admin view (?admin=1 missing), hide admin UI completely
     if not IS_ADMIN_VIEW:
         return
 
     with st.sidebar.expander("🧑‍🏫 Host / Admin controls", expanded=True):
-        # Show live participants in admin panel
         live_players_admin = count_live_players()
         st.metric("Live participants", live_players_admin)
 
@@ -420,7 +431,6 @@ def render_admin_controls():
             else:
                 st.write("All words completed.")
 
-            # Time info for this round (admin view)
             if start_time:
                 now = datetime.utcnow()
                 elapsed = (now - start_time).total_seconds()
@@ -436,13 +446,11 @@ def render_admin_controls():
             with tcol2:
                 st.metric("⏱ Remaining (s)", time_left)
 
-            # Only show correct answer AFTER time is over
             if idx < TOTAL_WORDS and start_time is not None and time_left <= 0:
                 st.markdown(f"✅ Correct word: **{WORDS[idx]['answer']}**")
             elif idx < TOTAL_WORDS:
                 st.caption("Correct word will appear here after time is over.")
 
-            # When round not started, show logged users list
             if not is_active or start_time is None:
                 names = get_live_players_names()
                 st.markdown("**✅ Logged-in players (waiting):**")
@@ -451,7 +459,6 @@ def render_admin_controls():
                 else:
                     st.write("No players have joined yet.")
 
-            # Answer stats for current word
             if idx < TOTAL_WORDS:
                 total_ans, correct_ans, incorrect_ans = get_answer_stats(idx)
                 st.markdown("**📊 This word stats:**")
@@ -459,7 +466,6 @@ def render_admin_controls():
                 st.write(f"- Correct: **{correct_ans}**")
                 st.write(f"- Incorrect: **{incorrect_ans}**")
 
-            # Admin controls for live game
             st.markdown("---")
             if idx < TOTAL_WORDS:
                 st.markdown("### 🎮 Round controls")
@@ -484,7 +490,6 @@ def render_admin_controls():
                     )
                     st.rerun()
 
-            # Colourful leaderboard preview in admin panel
             st.markdown("---")
             st.markdown("### 🌈 Live Overall Leaderboard")
 
@@ -498,16 +503,16 @@ def render_admin_controls():
                     total_time = round(total_time, 2)
 
                     if rank == 1:
-                        bg = "#FFD700"  # gold
+                        bg = "#FFD700"
                         medal = "🥇"
                     elif rank == 2:
-                        bg = "#C0C0C0"  # silver
+                        bg = "#C0C0C0"
                         medal = "🥈"
                     elif rank == 3:
-                        bg = "#CD7F32"  # bronze
+                        bg = "#CD7F32"
                         medal = "🥉"
                     else:
-                        bg = "#E3F2FD"  # light blue
+                        bg = "#E3F2FD"
                         medal = "⭐"
 
                     fill = int((correct_count / max_correct) * 100)
@@ -568,21 +573,15 @@ def render_admin_controls():
                 else:
                     st.write("No correct answers for this word yet.")
 
-            # Reset button
             st.markdown("---")
-            if st.button("🔁 Reset game (scores + words)", key="admin_reset"):
-                reset_scores()
-                set_game_state(
-                    current_word_index=0,
-                    question_start_time=None,
-                    is_active=0,
-                )
-                st.success("Game has been reset.")
+            if st.button("🔁 Reset game (scores + players + state)", key="admin_reset"):
+                reset_all()
+                st.success("Game and players have been fully reset.")
                 st.rerun()
 
 
 # -------------------------
-# LEADERBOARD & FEEDBACK (MAIN PAGE)
+# LEADERBOARD & FEEDBACK
 # -------------------------
 def show_answer_feedback(word_data):
     correct_answer = word_data["answer"].upper()
@@ -643,10 +642,9 @@ def show_leaderboard_section(current_word_index: int | None = None):
 
 
 # -------------------------
-# ADMIN MAIN VIEW (NO JOIN / NO ANSWER)
+# ADMIN MAIN VIEW
 # -------------------------
 def show_admin_main_view():
-    """Main content when in admin view: no join, no answering, just display."""
     st.subheader("Host / Projector View")
 
     live_players = count_live_players()
@@ -727,24 +725,20 @@ def main():
     init_db()
     init_session_state()
 
-    # Optional auto-refresh each second for live updates if library is installed
-    if st_autorefresh is not None:
-        st_autorefresh(interval=1000, key="game_autorefresh")
+    # 🔁 Auto-refresh every 1s: ensures players & admin see Next-word updates and timers
+    st_autorefresh(interval=1000, key="game_autorefresh")
 
     st.title("🧩 Employee Engagement Scrabble – Live Game")
 
-    # Admin controls & insights in sidebar (only on ?admin=1)
     render_admin_controls()
 
-    # If admin view, we DO NOT show join game at all
     if IS_ADMIN_VIEW:
         show_admin_main_view()
         return
 
-    # ---- PLAYER FLOW (no admin) ----
+    # ---- PLAYER FLOW ----
     if not st.session_state.player_name or not st.session_state.player_id:
         st.subheader("Join the game")
-
         name_input = st.text_input("Your display name", key="name_input")
         if st.button("Join Game"):
             name = name_input.strip()
@@ -762,9 +756,15 @@ def main():
                 st.stop()
         st.stop()
 
-    # Player is logged in
+    # Player is logged in (but maybe deleted by reset)
     player_id = st.session_state.player_id
     player_name = st.session_state.player_name
+
+    # If game was reset and this player no longer exists, force them back to Join screen
+    if not player_exists(player_id):
+        st.session_state.player_id = None
+        st.session_state.player_name = None
+        st.rerun()
 
     update_last_seen(player_id)
 
@@ -845,8 +845,7 @@ def main():
         disabled=disabled_input,
     )
 
-    submit_disabled = disabled_input
-    if st.button("Submit answer", disabled=submit_disabled):
+    if st.button("Submit answer", disabled=disabled_input):
         now = datetime.utcnow()
         elapsed = (now - start_time).total_seconds()
         time_taken = min(elapsed, TIME_LIMIT)
