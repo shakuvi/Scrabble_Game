@@ -1,6 +1,7 @@
 import streamlit as st
 import sqlite3
 from datetime import datetime, timedelta
+from streamlit_autorefresh import st_autorefresh  # pip install streamlit-autorefresh
 
 # -------------------------
 # PAGE CONFIG
@@ -105,6 +106,17 @@ WORDS = [
 TOTAL_WORDS = len(WORDS)
 TIME_LIMIT = 30  # seconds per word
 ACTIVE_WINDOW_MINUTES = 10  # for live participants counter
+
+
+# -------------------------
+# HELPER: FORMAT TIME
+# -------------------------
+def format_mmss(seconds: int) -> str:
+    if seconds < 0:
+        seconds = 0
+    m = seconds // 60
+    s = seconds % 60
+    return f"{m:02d}:{s:02d}"
 
 
 # -------------------------
@@ -398,7 +410,6 @@ def render_admin_controls():
             start_time = game_state["question_start_time"]
             is_active = game_state["is_active"]
 
-            # Show current word info (no answer reveal while timer is running)
             if idx < TOTAL_WORDS:
                 word_data = WORDS[idx]
                 st.markdown(f"### 🎯 Current word: **{idx + 1} / {TOTAL_WORDS}**")
@@ -420,8 +431,10 @@ def render_admin_controls():
             tcol1, tcol2 = st.columns(2)
             with tcol1:
                 st.metric("⏱ Elapsed (s)", time_elapsed)
+                st.caption(f"Clock: {format_mmss(time_elapsed)}")
             with tcol2:
                 st.metric("⏱ Remaining (s)", time_left)
+                st.caption(f"Countdown: {format_mmss(time_left)}")
 
             # Only show correct answer AFTER time is over
             if idx < TOTAL_WORDS and start_time is not None and time_left <= 0:
@@ -639,7 +652,6 @@ def show_admin_main_view():
     live_players = count_live_players()
     st.metric("Live participants", live_players)
 
-    # Show list of logged-in players while waiting
     names = get_live_players_names()
     st.markdown("**Logged-in players (waiting):**")
     if names:
@@ -652,7 +664,6 @@ def show_admin_main_view():
     start_time = game_state["question_start_time"]
     is_active = game_state["is_active"]
 
-    # GAME OVER
     if current_index >= TOTAL_WORDS:
         st.markdown("### 🎉 Game over!")
         st.write("All 13 words have been completed.")
@@ -663,7 +674,6 @@ def show_admin_main_view():
     word_data = WORDS[current_index]
     st.markdown(f"### Word {current_index + 1} of {TOTAL_WORDS}")
 
-    # If round is not active yet
     if not is_active or start_time is None:
         st.info("Waiting for the host to press **Start round** in the sidebar.")
         st.markdown(
@@ -677,7 +687,6 @@ def show_admin_main_view():
         show_leaderboard_section(current_word_index=word_data["index"])
         return
 
-    # Round active – time
     now = datetime.utcnow()
     elapsed = (now - start_time).total_seconds()
     time_elapsed = int(elapsed)
@@ -695,10 +704,11 @@ def show_admin_main_view():
     tcol1, tcol2 = st.columns(2)
     with tcol1:
         st.metric("⏱ Elapsed (s)", time_elapsed)
+        st.caption(f"Clock: {format_mmss(time_elapsed)}")
     with tcol2:
         st.metric("⏱ Remaining (s)", time_left)
+        st.caption(f"Countdown: {format_mmss(time_left)}")
 
-    # Show correct word only after time is over
     if time_left <= 0:
         st.markdown("### ✅ Correct word")
         st.markdown(
@@ -718,6 +728,9 @@ def show_admin_main_view():
 def main():
     init_db()
     init_session_state()
+
+    # Auto-refresh every second for live clock & updates
+    st_autorefresh(interval=1000, key="game_autorefresh")
 
     st.title("🧩 Employee Engagement Scrabble – Live Game")
 
@@ -754,33 +767,27 @@ def main():
     player_id = st.session_state.player_id
     player_name = st.session_state.player_name
 
-    # Update last_seen
     update_last_seen(player_id)
 
-    # Live participants (main UI)
     live_players = count_live_players()
 
-    # Global game state
     game_state = get_game_state()
     current_index = game_state["current_word_index"]
     start_time = game_state["question_start_time"]
     is_active = game_state["is_active"]
 
-    # Detect new word for this user and reset local flags
     if st.session_state.seen_word_index != current_index:
         st.session_state.seen_word_index = current_index
         st.session_state.has_answered = False
         st.session_state.last_answer_correct = None
         st.session_state.last_answer_time = None
 
-    # TOP INFO
     top_cols = st.columns([2, 1])
     with top_cols[0]:
         st.markdown(f"**Player:** {player_name}")
     with top_cols[1]:
         st.metric("Live participants", live_players)
 
-    # GAME OVER (global)
     if current_index >= TOTAL_WORDS:
         st.subheader("🎉 Game over!")
         st.write("All 13 words have been completed.")
@@ -792,7 +799,6 @@ def main():
 
     st.subheader(f"Word {current_index + 1} of {TOTAL_WORDS}")
 
-    # If round is not active yet
     if not is_active or start_time is None:
         st.info("Waiting for the host to press **Start round**.")
         st.markdown(
@@ -807,19 +813,16 @@ def main():
         show_leaderboard_section(current_word_index=word_data["index"])
         st.stop()
 
-    # Round is active – calculate time
     now = datetime.utcnow()
     elapsed = (now - start_time).total_seconds()
     time_elapsed = int(elapsed)
     time_left = max(0, TIME_LIMIT - time_elapsed)
 
-    # Auto mark as incorrect if time is up and user did not answer yet
     if time_left <= 0 and not st.session_state.has_answered:
         save_score(player_id, word_data["index"], False, None)
         st.session_state.has_answered = True
         st.session_state.last_answer_correct = False
 
-    # Show scramble + clue
     st.markdown(
         f"""
         ### 🔤 Scrabble word:
@@ -829,14 +832,14 @@ def main():
         """
     )
 
-    # Timer display as counter
     timer_col1, timer_col2 = st.columns(2)
     with timer_col1:
         st.metric("⏱ Elapsed (s)", time_elapsed)
+        st.caption(f"Clock: {format_mmss(time_elapsed)}")
     with timer_col2:
         st.metric("⏱ Remaining (s)", time_left)
+        st.caption(f"Countdown: {format_mmss(time_left)}")
 
-    # Answer input
     disabled_input = st.session_state.has_answered or time_left <= 0
 
     answer = st.text_input(
@@ -845,7 +848,6 @@ def main():
         disabled=disabled_input,
     )
 
-    # Submit button
     submit_disabled = disabled_input
     if st.button("Submit answer", disabled=submit_disabled):
         now = datetime.utcnow()
@@ -873,7 +875,6 @@ def main():
 
         st.rerun()
 
-    # After answer or time up – show feedback, correct word & leaderboard
     if st.session_state.has_answered or time_left <= 0:
         show_answer_feedback(word_data)
         st.markdown("---")
